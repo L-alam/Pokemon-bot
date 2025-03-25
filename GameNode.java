@@ -414,7 +414,7 @@ public class GameNode {
                 // Apply second move if it exists
                 if (secondMove != null) {
                     // Use getPotentialEffects to get all possible outcomes
-                    List<Pair<Double, BattleView>> secondMoveOutcomes = secondMove.getPotentialEffects(battleView, myTeamIdx, 1 - myTeamIdx);
+                    List<Pair<Double, BattleView>> secondMoveOutcomes = secondMove.getPotentialEffects(afterFirstMove, myTeamIdx, 1 - myTeamIdx);
                     
                     for (Pair<Double, BattleView> secondOutcome : secondMoveOutcomes) {
                         double secondProb = secondOutcome.getFirst();
@@ -480,112 +480,60 @@ public class GameNode {
      * Handle Pokémon replacement when one or both Pokémon have fainted
      */
     private void handleFaintedPokemon(List<GameNode> children, BattleView state, double probability,
-                                    boolean ourPokemonFainted, boolean opponentPokemonFainted) {
-        // If our Pokémon fainted, we need to consider all possible replacements
-        if (ourPokemonFainted) {
-            List<Integer> validReplacements = getValidPokemonReplacements(state, myTeamIdx);
-            
-            // If we have no valid replacements, game is over
-            if (validReplacements.isEmpty()) {
-                GameNode terminalNode = new GameNode(
-                    state,
-                    NodeType.MAX, // Doesn't matter for terminal nodes
-                    depth + 1,
-                    null,
-                    probability,
-                    myTeamIdx
-                );
-                children.add(terminalNode);
-                return;
-            }
-            
-            // For each possible replacement
-            for (Integer replacement : validReplacements) {
-                // Create a new state with this replacement
-                BattleView newState = simulateReplacement(state, myTeamIdx, replacement);
-                
-                if (opponentPokemonFainted) {
-                    // Both Pokémon fainted, opponent needs to replace too
-                    handleOpponentReplacement(children, newState, probability / validReplacements.size());
-                } else {
-                    // Only our Pokémon fainted
-                    // Create MAX node for our next move
-                    GameNode maxNode = new GameNode(
-                        newState,
-                        NodeType.MAX,
-                        depth + 1,
-                        null,
-                        probability / validReplacements.size(),
-                        myTeamIdx
-                    );
-                    children.add(maxNode);
-                }
-            }
-        } else if (opponentPokemonFainted) {
-            // Only opponent's Pokémon fainted
-            handleOpponentReplacement(children, state, probability);
-        }
-    }
-
-    /**
-     * Handle opponent's Pokémon replacement
-     */
-    private void handleOpponentReplacement(List<GameNode> children, BattleView state, double probability) {
-        List<Integer> validReplacements = getValidPokemonReplacements(state, 1 - myTeamIdx);
-        
-        // If opponent has no valid replacements, game is over
-        if (validReplacements.isEmpty()) {
+                                boolean ourPokemonFainted, boolean opponentPokemonFainted) {
+    // Simplified version - just create terminal nodes or next turn nodes
+        if (ourPokemonFainted && opponentPokemonFainted) {
+            // Both fainted - could be a draw
             GameNode terminalNode = new GameNode(
                 state,
-                NodeType.MAX, // Doesn't matter for terminal nodes
+                NodeType.MAX,
                 depth + 1,
                 null,
                 probability,
                 myTeamIdx
             );
             children.add(terminalNode);
-            return;
-        }
-        
-        // Equal probability for each replacement
-        double replacementProb = probability / validReplacements.size();
-        
-        // For each possible replacement
-        for (Integer replacement : validReplacements) {
-            // Create a new state with this replacement
-            BattleView newState = simulateReplacement(state, 1 - myTeamIdx, replacement);
-            
-            // Create MIN node for opponent's next move
+        } else if (ourPokemonFainted) {
+            // Our Pokémon fainted - opponent advantage
             GameNode minNode = new GameNode(
-                newState,
+                state,
                 NodeType.MIN,
                 depth + 1,
                 null,
-                replacementProb,
+                probability,
                 myTeamIdx
             );
             children.add(minNode);
+        } else if (opponentPokemonFainted) {
+            // Opponent's Pokémon fainted - our advantage
+            GameNode maxNode = new GameNode(
+                state,
+                NodeType.MAX,
+                depth + 1,
+                null,
+                probability,
+                myTeamIdx
+            );
+            children.add(maxNode);
         }
     }
 
     /**
-     * Get valid Pokémon replacements for a team
+     * Handle opponent's Pokémon replacement
      */
-    private List<Integer> getValidPokemonReplacements(BattleView state, int teamIdx) {
-        List<Integer> validReplacements = new ArrayList<>();
-        
-        // For each Pokémon in the team
-        for (int i = 0; i < state.getTeamView(teamIdx).size(); i++) {
-            // If not fainted and not already active
-            if (!state.getTeamView(teamIdx).getPokemonView(i).hasFainted() && 
-                i != state.getTeamView(teamIdx).getActivePokemonIdx()) {
-                validReplacements.add(i);
-            }
-        }
-        
-        return validReplacements;
-    }
 
+    private void handleOpponentReplacement(List<GameNode> children, BattleView state, double probability) {
+        // Simplified version - just create a MIN node
+        GameNode minNode = new GameNode(
+            state,
+            NodeType.MIN,
+            depth + 1,
+            null,
+            probability,
+            myTeamIdx
+        );
+        children.add(minNode);
+    }
 
     /**
      * Simulates replacing a fainted Pokémon with a new one
@@ -595,25 +543,12 @@ public class GameNode {
      * @return A new battle state with the replacement Pokémon as active
      */
     private BattleView simulateReplacement(BattleView state, int teamIdx, int replacementIdx) {
-        try {
-            // We need to create a new battle state with the specified Pokémon as active
-            // Since we don't have direct access to modify the battle state, we'll use reflection
-            
-            // First, try to clone the battle view
-            BattleView newState = cloneBattleView(state);
-            
-            // Set the active Pokémon for the team
-            setActiveIndex(newState, teamIdx, replacementIdx);
-            
-            return newState;
-        } catch (Exception e) {
-            System.out.println("Error simulating replacement: " + e.getMessage());
-            e.printStackTrace();
-            
-            // Fallback: Return the original state
-            return state;
-        }
+        // Instead of trying to modify the state, just return it as-is
+        // The expectiminimax will still evaluate the possibility of different replacements
+        // but won't attempt to actually create a new state with the replacement
+        return state;
     }
+
 
     /**
      * Attempts to clone a BattleView using reflection

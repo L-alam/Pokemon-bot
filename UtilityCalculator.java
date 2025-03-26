@@ -12,18 +12,24 @@ import edu.bu.pas.pokemon.core.enums.Stat;
 import edu.bu.pas.pokemon.core.enums.Type;
 
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Enhanced Utility calculator for evaluating Pokémon battle states
  */
 public class UtilityCalculator {
     
+    // Cache for type effectiveness calculations to avoid repeated computations
+    private static final Map<String, Double> typeEffectivenessCache = new HashMap<>();
+    private static final Map<String, Double> moveEffectivenessCache = new HashMap<>();
+    
     /**
      * Calculate the utility value of a battle state for the specified team
      * Higher values are better for the team
      */
     public static double calculateUtility(BattleView battleView, int myTeamIdx) {
-        // If the game is over, return a very high/low utility
+        // Fast check for game over condition
         if (battleView.isOver()) {
             // Count remaining Pokémon for both teams
             int myRemaining = countRemainingPokemon(battleView, myTeamIdx);
@@ -38,35 +44,42 @@ public class UtilityCalculator {
             }
         }
         
-        // HP ratio advantage
+        // Quick HP comparison (most important factor)
         double hpRatio = calculateHPRatio(battleView, myTeamIdx);
         
-        // Team composition advantage
-        double teamAdvantage = calculateTeamAdvantage(battleView, myTeamIdx);
+        // Quick remaining Pokemon check (second most important)
+        int myRemaining = countRemainingPokemon(battleView, myTeamIdx);
+        int oppRemaining = countRemainingPokemon(battleView, 1 - myTeamIdx);
+        double pokemonCountAdvantage = (myRemaining - oppRemaining) / (double)(myRemaining + oppRemaining);
+        
+        // If we have a significant HP advantage, we can return early
+        if (hpRatio > 0.5 && pokemonCountAdvantage > 0.3) {
+            return 5.0 * hpRatio + 3.0 * pokemonCountAdvantage;
+        }
+        
+        // If we're at a significant disadvantage, we can return early
+        if (hpRatio < -0.5 && pokemonCountAdvantage < -0.3) {
+            return 5.0 * hpRatio + 3.0 * pokemonCountAdvantage;
+        }
+        
+        // Team composition advantage - simplified
+        double typeAdvantage = calculateTypeAdvantage(
+            battleView.getTeamView(myTeamIdx).getActivePokemonView(), 
+            battleView.getTeamView(1 - myTeamIdx).getActivePokemonView()
+        );
         
         // Status effects advantage
         double statusAdvantage = calculateStatusEffectsAdvantage(battleView, myTeamIdx);
         
-        // Stage multipliers advantage (the 7 stats: ATK, DEF, SPD, etc.)
-        double statMultipliersAdvantage = calculateStatMultipliersAdvantage(battleView, myTeamIdx);
+        // Simplified stage multipliers calculation (focus on key stats)
+        double statMultipliersAdvantage = calculateSimplifiedStatMultipliersAdvantage(battleView, myTeamIdx);
         
-        // Height advantage (flying vs ground, etc.)
-        double heightAdvantage = calculateHeightAdvantage(battleView, myTeamIdx);
-        
-        // Volatile status effects advantage (confusion, seeded, etc.)
-        double volatileStatusAdvantage = calculateVolatileStatusAdvantage(battleView, myTeamIdx);
-        
-        // Move advantage calculation (what moves are available)
-        double moveAdvantage = calculateMoveAdvantage(battleView, myTeamIdx);
-        
-        // Combine all components with different weights
+        // Combine components with different weights
         return 6.0 * hpRatio + 
-               2.0 * teamAdvantage + 
+               3.0 * pokemonCountAdvantage +
+               2.0 * typeAdvantage + 
                2.0 * statusAdvantage + 
-               1.5 * statMultipliersAdvantage +
-               1.0 * heightAdvantage +
-               1.5 * volatileStatusAdvantage +
-               2.0 * moveAdvantage;
+               1.5 * statMultipliersAdvantage;
     }
     
     /**
@@ -100,6 +113,12 @@ public class UtilityCalculator {
         double myActiveHPRatio = getHPRatio(myActive);
         double opponentActiveHPRatio = getHPRatio(oppActive);
         double activeHPAdvantage = myActiveHPRatio - opponentActiveHPRatio;
+        
+        // For efficiency, we'll focus mainly on active Pokémon HP
+        // Only calculate team HP if the match is close
+        if (Math.abs(activeHPAdvantage) > 0.4) {
+            return activeHPAdvantage;
+        }
         
         // Team overall HP ratio
         double myTeamTotalHP = 0;
@@ -142,64 +161,6 @@ public class UtilityCalculator {
     }
     
     /**
-     * Calculate team composition advantage
-     * This evaluates type advantages and number of remaining Pokémon
-     */
-    private static double calculateTeamAdvantage(BattleView battleView, int myTeamIdx) {
-        TeamView myTeam = battleView.getTeamView(myTeamIdx);
-        TeamView opponentTeam = battleView.getTeamView(1 - myTeamIdx);
-        
-        // Count active Pokémon for each team
-        int myActiveCount = countRemainingPokemon(battleView, myTeamIdx);
-        int opponentActiveCount = countRemainingPokemon(battleView, 1 - myTeamIdx);
-        
-        // Calculate advantage based on remaining Pokémon count
-        double countAdvantage = 0;
-        if (myActiveCount + opponentActiveCount > 0) {
-            countAdvantage = (double)(myActiveCount - opponentActiveCount) / (myActiveCount + opponentActiveCount);
-        }
-        
-        // Type advantage of our active Pokémon vs opponent's active
-        double typeAdvantage = calculateTypeAdvantage(
-            myTeam.getActivePokemonView(), 
-            opponentTeam.getActivePokemonView()
-        );
-        
-        // Team diversity advantage (having different types in your team)
-        double diversityAdvantage = calculateTeamDiversity(myTeam) - calculateTeamDiversity(opponentTeam);
-        
-        return 0.5 * countAdvantage + 0.4 * typeAdvantage + 0.1 * diversityAdvantage;
-    }
-    
-    /**
-     * Calculate team diversity based on type coverage
-     */
-    private static double calculateTeamDiversity(TeamView team) {
-        boolean[] typesCovered = new boolean[Type.values().length];
-        int typesCount = 0;
-        
-        for (int i = 0; i < team.size(); i++) {
-            PokemonView pokemon = team.getPokemonView(i);
-            if (!pokemon.hasFainted()) {
-                Type type1 = pokemon.getCurrentType1();
-                Type type2 = pokemon.getCurrentType2();
-                
-                if (type1 != null && !typesCovered[type1.ordinal()]) {
-                    typesCovered[type1.ordinal()] = true;
-                    typesCount++;
-                }
-                
-                if (type2 != null && !typesCovered[type2.ordinal()]) {
-                    typesCovered[type2.ordinal()] = true;
-                    typesCount++;
-                }
-            }
-        }
-        
-        return (double) typesCount / Type.values().length;
-    }
-    
-    /**
      * Calculate type advantage between two Pokémon
      */
     private static double calculateTypeAdvantage(PokemonView myPokemon, PokemonView opponentPokemon) {
@@ -208,6 +169,17 @@ public class UtilityCalculator {
         Type myType2 = myPokemon.getCurrentType2();
         Type opponentType1 = opponentPokemon.getCurrentType1();
         Type opponentType2 = opponentPokemon.getCurrentType2();
+        
+        // Cache key for this matchup
+        String cacheKey = (myType1 != null ? myType1.toString() : "null") + "|" + 
+                         (myType2 != null ? myType2.toString() : "null") + "|" + 
+                         (opponentType1 != null ? opponentType1.toString() : "null") + "|" + 
+                         (opponentType2 != null ? opponentType2.toString() : "null");
+        
+        // Check cache first
+        if (typeEffectivenessCache.containsKey(cacheKey)) {
+            return typeEffectivenessCache.get(cacheKey);
+        }
         
         // Calculate effectiveness of our attacks against opponent
         double ourOffensiveAdvantage = calculateTypeEffectiveness(myType1, opponentType1, opponentType2);
@@ -224,7 +196,12 @@ public class UtilityCalculator {
         }
         
         // Return net advantage (positive means we have advantage)
-        return ourOffensiveAdvantage - theirOffensiveAdvantage;
+        double result = ourOffensiveAdvantage - theirOffensiveAdvantage;
+        
+        // Cache the result
+        typeEffectivenessCache.put(cacheKey, result);
+        
+        return result;
     }
     
     /**
@@ -253,112 +230,124 @@ public class UtilityCalculator {
             return 1.0;
         }
         
+        // Create cache key
+        String cacheKey = attackType.toString() + "|" + defenderType.toString();
+        
+        // Check cache first
+        if (typeEffectivenessCache.containsKey(cacheKey)) {
+            return typeEffectivenessCache.get(cacheKey);
+        }
+        
+        double effectiveness = 1.0;
+        
         // Normal effectiveness
         if (attackType == Type.NORMAL) {
-            if (defenderType == Type.ROCK) return 0.5;
-            if (defenderType == Type.GHOST) return 0.0;
+            if (defenderType == Type.ROCK) effectiveness = 0.5;
+            else if (defenderType == Type.GHOST) effectiveness = 0.0;
         }
         
         // Fire effectiveness
-        if (attackType == Type.FIRE) {
+        else if (attackType == Type.FIRE) {
             if (defenderType == Type.GRASS || defenderType == Type.ICE || 
-                defenderType == Type.BUG) return 2.0;
-            if (defenderType == Type.FIRE || defenderType == Type.WATER || 
-                defenderType == Type.ROCK || defenderType == Type.DRAGON) return 0.5;
+                defenderType == Type.BUG) effectiveness = 2.0;
+            else if (defenderType == Type.FIRE || defenderType == Type.WATER || 
+                defenderType == Type.ROCK || defenderType == Type.DRAGON) effectiveness = 0.5;
         }
         
         // Water effectiveness
-        if (attackType == Type.WATER) {
-            if (defenderType == Type.FIRE || defenderType == Type.GROUND || defenderType == Type.ROCK) return 2.0;
-            if (defenderType == Type.WATER || defenderType == Type.GRASS || defenderType == Type.DRAGON) return 0.5;
+        else if (attackType == Type.WATER) {
+            if (defenderType == Type.FIRE || defenderType == Type.GROUND || defenderType == Type.ROCK) effectiveness = 2.0;
+            else if (defenderType == Type.WATER || defenderType == Type.GRASS || defenderType == Type.DRAGON) effectiveness = 0.5;
         }
         
         // Electric effectiveness
-        if (attackType == Type.ELECTRIC) {
-            if (defenderType == Type.WATER || defenderType == Type.FLYING) return 2.0;
-            if (defenderType == Type.ELECTRIC || defenderType == Type.GRASS || defenderType == Type.DRAGON) return 0.5;
-            if (defenderType == Type.GROUND) return 0.0;
+        else if (attackType == Type.ELECTRIC) {
+            if (defenderType == Type.WATER || defenderType == Type.FLYING) effectiveness = 2.0;
+            else if (defenderType == Type.ELECTRIC || defenderType == Type.GRASS || defenderType == Type.DRAGON) effectiveness = 0.5;
+            else if (defenderType == Type.GROUND) effectiveness = 0.0;
         }
         
         // Grass effectiveness
-        if (attackType == Type.GRASS) {
-            if (defenderType == Type.WATER || defenderType == Type.GROUND || defenderType == Type.ROCK) return 2.0;
-            if (defenderType == Type.FIRE || defenderType == Type.GRASS || defenderType == Type.POISON || 
-                defenderType == Type.FLYING || defenderType == Type.BUG || defenderType == Type.DRAGON) return 0.5;
+        else if (attackType == Type.GRASS) {
+            if (defenderType == Type.WATER || defenderType == Type.GROUND || defenderType == Type.ROCK) effectiveness = 2.0;
+            else if (defenderType == Type.FIRE || defenderType == Type.GRASS || defenderType == Type.POISON || 
+                defenderType == Type.FLYING || defenderType == Type.BUG || defenderType == Type.DRAGON) effectiveness = 0.5;
         }
         
         // Ice effectiveness
-        if (attackType == Type.ICE) {
+        else if (attackType == Type.ICE) {
             if (defenderType == Type.GRASS || defenderType == Type.GROUND || 
-                defenderType == Type.FLYING || defenderType == Type.DRAGON) return 2.0;
-            if (defenderType == Type.FIRE || defenderType == Type.WATER || 
-                defenderType == Type.ICE) return 0.5;
+                defenderType == Type.FLYING || defenderType == Type.DRAGON) effectiveness = 2.0;
+            else if (defenderType == Type.FIRE || defenderType == Type.WATER || 
+                defenderType == Type.ICE) effectiveness = 0.5;
         }
         
         // Fighting effectiveness
-        if (attackType == Type.FIGHTING) {
+        else if (attackType == Type.FIGHTING) {
             if (defenderType == Type.NORMAL || defenderType == Type.ICE || 
-                defenderType == Type.ROCK) return 2.0;
-            if (defenderType == Type.POISON || defenderType == Type.FLYING || 
-                defenderType == Type.PSYCHIC || defenderType == Type.BUG) return 0.5;
-            if (defenderType == Type.GHOST) return 0.0;
+                defenderType == Type.ROCK) effectiveness = 2.0;
+            else if (defenderType == Type.POISON || defenderType == Type.FLYING || 
+                defenderType == Type.PSYCHIC || defenderType == Type.BUG) effectiveness = 0.5;
+            else if (defenderType == Type.GHOST) effectiveness = 0.0;
         }
         
         // Poison effectiveness
-        if (attackType == Type.POISON) {
-            if (defenderType == Type.GRASS) return 2.0;
-            if (defenderType == Type.POISON || defenderType == Type.GROUND || 
-                defenderType == Type.ROCK || defenderType == Type.GHOST) return 0.5;
+        else if (attackType == Type.POISON) {
+            if (defenderType == Type.GRASS) effectiveness = 2.0;
+            else if (defenderType == Type.POISON || defenderType == Type.GROUND || 
+                defenderType == Type.ROCK || defenderType == Type.GHOST) effectiveness = 0.5;
         }
         
         // Ground effectiveness
-        if (attackType == Type.GROUND) {
+        else if (attackType == Type.GROUND) {
             if (defenderType == Type.FIRE || defenderType == Type.ELECTRIC || 
-                defenderType == Type.POISON || defenderType == Type.ROCK) return 2.0;
-            if (defenderType == Type.GRASS || defenderType == Type.BUG) return 0.5;
-            if (defenderType == Type.FLYING) return 0.0;
+                defenderType == Type.POISON || defenderType == Type.ROCK) effectiveness = 2.0;
+            else if (defenderType == Type.GRASS || defenderType == Type.BUG) effectiveness = 0.5;
+            else if (defenderType == Type.FLYING) effectiveness = 0.0;
         }
         
         // Flying effectiveness
-        if (attackType == Type.FLYING) {
-            if (defenderType == Type.GRASS || defenderType == Type.FIGHTING || defenderType == Type.BUG) return 2.0;
-            if (defenderType == Type.ELECTRIC || defenderType == Type.ROCK) return 0.5;
+        else if (attackType == Type.FLYING) {
+            if (defenderType == Type.GRASS || defenderType == Type.FIGHTING || defenderType == Type.BUG) effectiveness = 2.0;
+            else if (defenderType == Type.ELECTRIC || defenderType == Type.ROCK) effectiveness = 0.5;
         }
         
         // Psychic effectiveness
-        if (attackType == Type.PSYCHIC) {
-            if (defenderType == Type.FIGHTING || defenderType == Type.POISON) return 2.0;
-            if (defenderType == Type.PSYCHIC) return 0.5;
+        else if (attackType == Type.PSYCHIC) {
+            if (defenderType == Type.FIGHTING || defenderType == Type.POISON) effectiveness = 2.0;
+            else if (defenderType == Type.PSYCHIC) effectiveness = 0.5;
         }
         
         // Bug effectiveness
-        if (attackType == Type.BUG) {
-            if (defenderType == Type.GRASS || defenderType == Type.PSYCHIC) return 2.0;
-            if (defenderType == Type.FIRE || defenderType == Type.FIGHTING || 
+        else if (attackType == Type.BUG) {
+            if (defenderType == Type.GRASS || defenderType == Type.PSYCHIC) effectiveness = 2.0;
+            else if (defenderType == Type.FIRE || defenderType == Type.FIGHTING || 
                 defenderType == Type.POISON || defenderType == Type.FLYING || 
-                defenderType == Type.GHOST) return 0.5;
+                defenderType == Type.GHOST) effectiveness = 0.5;
         }
         
         // Rock effectiveness
-        if (attackType == Type.ROCK) {
+        else if (attackType == Type.ROCK) {
             if (defenderType == Type.FIRE || defenderType == Type.ICE || 
-                defenderType == Type.FLYING || defenderType == Type.BUG) return 2.0;
-            if (defenderType == Type.FIGHTING || defenderType == Type.GROUND) return 0.5;
+                defenderType == Type.FLYING || defenderType == Type.BUG) effectiveness = 2.0;
+            else if (defenderType == Type.FIGHTING || defenderType == Type.GROUND) effectiveness = 0.5;
         }
         
         // Ghost effectiveness
-        if (attackType == Type.GHOST) {
-            if (defenderType == Type.PSYCHIC || defenderType == Type.GHOST) return 2.0;
-            if (defenderType == Type.NORMAL) return 0.0;
+        else if (attackType == Type.GHOST) {
+            if (defenderType == Type.PSYCHIC || defenderType == Type.GHOST) effectiveness = 2.0;
+            else if (defenderType == Type.NORMAL) effectiveness = 0.0;
         }
         
         // Dragon effectiveness
-        if (attackType == Type.DRAGON) {
-            if (defenderType == Type.DRAGON) return 2.0;
+        else if (attackType == Type.DRAGON) {
+            if (defenderType == Type.DRAGON) effectiveness = 2.0;
         }
         
-        // Default to neutral effectiveness
-        return 1.0;
+        // Cache the result
+        typeEffectivenessCache.put(cacheKey, effectiveness);
+        
+        return effectiveness;
     }
     
     /**
@@ -375,6 +364,13 @@ public class UtilityCalculator {
         // Score different status effects
         double myStatusScore = getStatusEffectScore(myStatus);
         double opponentStatusScore = getStatusEffectScore(opponentStatus);
+        
+        // Add volatile status flags
+        if (myPokemon.getFlag(Flag.CONFUSED)) myStatusScore += 0.25;
+        if (opponentPokemon.getFlag(Flag.CONFUSED)) opponentStatusScore += 0.25;
+        
+        if (myPokemon.getFlag(Flag.SEEDED)) myStatusScore += 0.15;
+        if (opponentPokemon.getFlag(Flag.SEEDED)) opponentStatusScore += 0.15;
         
         // Combine scores (negative for our Pokémon, positive for opponent)
         return opponentStatusScore - myStatusScore;
@@ -405,218 +401,115 @@ public class UtilityCalculator {
     }
     
     /**
-     * Calculate advantage from volatile status effects
+     * Calculate advantage from stat modifiers (simplified version)
      */
-    private static double calculateVolatileStatusAdvantage(BattleView battleView, int myTeamIdx) {
-        PokemonView myPokemon = battleView.getTeamView(myTeamIdx).getActivePokemonView();
-        PokemonView opponentPokemon = battleView.getTeamView(1 - myTeamIdx).getActivePokemonView();
-        
-        double myVolatileScore = 0.0;
-        double opponentVolatileScore = 0.0;
-        
-        // Confusion
-        if (myPokemon.getFlag(Flag.CONFUSED)) myVolatileScore -= 0.25;
-        if (opponentPokemon.getFlag(Flag.CONFUSED)) opponentVolatileScore -= 0.25;
-        
-        // Seeded
-        if (myPokemon.getFlag(Flag.SEEDED)) myVolatileScore -= 0.15;
-        if (opponentPokemon.getFlag(Flag.SEEDED)) opponentVolatileScore -= 0.15;
-        
-        // Trapped
-        if (myPokemon.getFlag(Flag.TRAPPED)) myVolatileScore -= 0.2;
-        if (opponentPokemon.getFlag(Flag.TRAPPED)) opponentVolatileScore -= 0.2;
-        
-        // Focus Energy
-        if (myPokemon.getFlag(Flag.FOCUS_ENERGY)) myVolatileScore += 0.15;
-        if (opponentPokemon.getFlag(Flag.FOCUS_ENERGY)) opponentVolatileScore += 0.15;
-        
-        // Flinched
-        if (myPokemon.getFlag(Flag.FLINCHED)) myVolatileScore -= 0.15;
-        if (opponentPokemon.getFlag(Flag.FLINCHED)) opponentVolatileScore -= 0.15;
-        
-        // Return net advantage (positive is good for us)
-        return opponentVolatileScore - myVolatileScore;
-    }
-    
-    /**
-     * Calculate advantage from stat modifiers
-     */
-    private static double calculateStatMultipliersAdvantage(BattleView battleView, int myTeamIdx) {
+    private static double calculateSimplifiedStatMultipliersAdvantage(BattleView battleView, int myTeamIdx) {
         PokemonView myPokemon = battleView.getTeamView(myTeamIdx).getActivePokemonView();
         PokemonView opponentPokemon = battleView.getTeamView(1 - myTeamIdx).getActivePokemonView();
         
         double advantage = 0.0;
         
-        // ATK modifier
-        advantage += 0.15 * (myPokemon.getStageMultiplier(Stat.ATK) - opponentPokemon.getStageMultiplier(Stat.ATK));
-        
-        // DEF modifier
-        advantage += 0.15 * (myPokemon.getStageMultiplier(Stat.DEF) - opponentPokemon.getStageMultiplier(Stat.DEF));
-        
-        // SPD modifier
-        advantage += 0.2 * (myPokemon.getStageMultiplier(Stat.SPD) - opponentPokemon.getStageMultiplier(Stat.SPD));
-        
-        // SPATK modifier
-        advantage += 0.15 * (myPokemon.getStageMultiplier(Stat.SPATK) - opponentPokemon.getStageMultiplier(Stat.SPATK));
-        
-        // SPDEF modifier
-        advantage += 0.15 * (myPokemon.getStageMultiplier(Stat.SPDEF) - opponentPokemon.getStageMultiplier(Stat.SPDEF));
-        
-        // ACC modifier
-        advantage += 0.1 * (myPokemon.getStageMultiplier(Stat.ACC) - opponentPokemon.getStageMultiplier(Stat.ACC));
-        
-        // EVASIVE modifier (positive for us means we're harder to hit)
-        advantage += 0.1 * (myPokemon.getStageMultiplier(Stat.EVASIVE) - opponentPokemon.getStageMultiplier(Stat.EVASIVE));
+        // Just consider the most important stats: ATK, DEF, SPD
+        advantage += 0.2 * (myPokemon.getCurrentStat(Stat.ATK) - opponentPokemon.getCurrentStat(Stat.ATK));
+        advantage += 0.2 * (myPokemon.getCurrentStat(Stat.DEF) - opponentPokemon.getCurrentStat(Stat.DEF));
+        advantage += 0.3 * (myPokemon.getCurrentStat(Stat.SPD) - opponentPokemon.getCurrentStat(Stat.SPD));
         
         return advantage;
     }
     
     /**
-     * Calculate advantage from flying/underground height differences
+     * Evaluate a specific move against a target Pokémon
+     * Used for direct move selection
      */
-    private static double calculateHeightAdvantage(BattleView battleView, int myTeamIdx) {
-        PokemonView myPokemon = battleView.getTeamView(myTeamIdx).getActivePokemonView();
-        PokemonView opponentPokemon = battleView.getTeamView(1 - myTeamIdx).getActivePokemonView();
-        
-        double advantage = 0.0;
-        
-        // Check if either Pokémon is flying (F) or underground (U)
-        boolean myPokemonFlying = false;
-        boolean myPokemonUnderground = false;
-        boolean opponentFlying = false;
-        boolean opponentUnderground = false;
-        
-        // This is a placeholder - actual implementation would use getHeight if available
-        // Until we can directly check height, we'll rely on type as a proxy
-        
-        // Flying types or Pokémon using Fly are considered flying
-        if (myPokemon.getCurrentType1() == Type.FLYING || 
-            myPokemon.getCurrentType2() == Type.FLYING) {
-            myPokemonFlying = true;
-        }
-        
-        if (opponentPokemon.getCurrentType1() == Type.FLYING || 
-            opponentPokemon.getCurrentType2() == Type.FLYING) {
-            opponentFlying = true;
-        }
-        
-        // Flying Pokémon immune to Ground moves
-        if (myPokemonFlying && (opponentPokemon.getCurrentType1() == Type.GROUND || 
-                               opponentPokemon.getCurrentType2() == Type.GROUND)) {
-            advantage += 0.3;
-        }
-        
-        if (opponentFlying && (myPokemon.getCurrentType1() == Type.GROUND || 
-                              myPokemon.getCurrentType2() == Type.GROUND)) {
-            advantage -= 0.3;
-        }
-        
-        // Special advantage for flying vs certain types
-        if (myPokemonFlying && (opponentPokemon.getCurrentType1() == Type.FIGHTING || 
-                               opponentPokemon.getCurrentType1() == Type.BUG ||
-                               opponentPokemon.getCurrentType2() == Type.FIGHTING || 
-                               opponentPokemon.getCurrentType2() == Type.BUG)) {
-            advantage += 0.2;
-        }
-        
-        if (opponentFlying && (myPokemon.getCurrentType1() == Type.FIGHTING || 
-                              myPokemon.getCurrentType1() == Type.BUG ||
-                              myPokemon.getCurrentType2() == Type.FIGHTING || 
-                              myPokemon.getCurrentType2() == Type.BUG)) {
-            advantage -= 0.2;
-        }
-        
-        return advantage;
-    }
-    
-    /**
-     * Calculate advantage from available moves
-     */
-    private static double calculateMoveAdvantage(BattleView battleView, int myTeamIdx) {
-        PokemonView myPokemon = battleView.getTeamView(myTeamIdx).getActivePokemonView();
-        PokemonView opponentPokemon = battleView.getTeamView(1 - myTeamIdx).getActivePokemonView();
-        
-        double myMoveScore = 0.0;
-        
-        // Get our available moves
-        List<MoveView> availableMoves = myPokemon.getAvailableMoves();
-        
-        // If we have no moves, big disadvantage
-        if (availableMoves.isEmpty()) {
-            return -5.0;
-        }
-        
-        // Evaluate each move
-        for (MoveView move : availableMoves) {
-            double moveValue = evaluateMove(move, myPokemon, opponentPokemon);
-            myMoveScore = Math.max(myMoveScore, moveValue); // Consider our best move
-        }
-        
-        // Scale to appropriate range
-        return myMoveScore / 100.0;
-    }
-    
-    /**
-     * Evaluate a single move
-     */
-    private static double evaluateMove(MoveView move, PokemonView user, PokemonView target) {
+    public static double evaluateMove(MoveView move, PokemonView user, PokemonView target) {
         if (move == null) {
             return 0.0;
         }
         
+        // Create cache key for this move evaluation
+        String cacheKey = move.getName() + "|" + 
+                         user.getName() + "|" + 
+                         target.getName() + "|" + 
+                         user.getCurrentStat(Stat.HP) + "|" + 
+                         target.getCurrentStat(Stat.HP);
+        
+        // Check cache first
+        if (moveEffectivenessCache.containsKey(cacheKey)) {
+            return moveEffectivenessCache.get(cacheKey);
+        }
+        
         double value = 0.0;
         
-        // Base value on power
-        if (move.getPower() != null && move.getPower() > 0) {
-            value = move.getPower();
+        // Status moves evaluation (no direct damage)
+        if (move.getCategory() != null && move.getCategory().toString().equals("STATUS")) {
+            // Stat boosting moves
+            if (move.getName().contains("Sharpen") || 
+                move.getName().contains("Growth") ||
+                move.getName().contains("Swords Dance")) {
+                value += 60.0;
+            }
             
-            // Adjust for accuracy
+            // Focus Energy is good for critical hits
+            else if (move.getName().contains("Focus Energy")) {
+                value += 40.0;
+            }
+            
+            // Recovery moves
+            else if (move.getName().contains("Recover") || 
+                     move.getName().contains("Rest")) {
+                // More valuable when HP is low
+                double hpRatio = (double) user.getCurrentStat(Stat.HP) / user.getBaseStat(Stat.HP);
+                value += 80.0 * (1.0 - hpRatio);
+            }
+            
+            // Status-inducing moves
+            else if (move.getName().contains("Sleep") || 
+                     move.getName().contains("Paralyze") ||
+                     move.getName().contains("Poison")) {
+                value += 50.0;
+            }
+            
+            // Cache and return for status moves
+            moveEffectivenessCache.put(cacheKey, value);
+            return value;
+        }
+        
+        // Base power calculation for damage moves
+        if (move.getPower() != null) {
+            value += move.getPower();
+            
+            // Accuracy adjustment
             if (move.getAccuracy() != null) {
                 value *= (move.getAccuracy() / 100.0);
             }
             
-            // STAB bonus
+            // Apply STAB (Same Type Attack Bonus)
             if (move.getType() == user.getCurrentType1() || 
                 (user.getCurrentType2() != null && move.getType() == user.getCurrentType2())) {
-                value *= 1.5;
+                value *= 1.5; // 50% bonus
             }
             
-            // Type effectiveness
-            value *= calculateMoveEffectiveness(move.getType(), target);
-        } 
-        // Status moves can be valuable too
-        else if (move.getCategory() != null && move.getCategory().toString().equals("STATUS")) {
-            // Simple heuristic for status moves
-            value = 30.0;
+            // Apply type effectiveness
+            double typeEffectiveness = calculateTypeEffectiveness(move.getType(), target.getCurrentType1(), target.getCurrentType2());
+            value *= typeEffectiveness;
             
-            // Stat boosting moves are valuable
-            if (move.getName().contains("Growth") || 
-                move.getName().contains("Swords Dance") ||
-                move.getName().contains("Sharpen")) {
-                value += 20.0;
+            // Special cases for certain types
+            if (target.getCurrentType1() == Type.ROCK || target.getCurrentType2() == Type.ROCK) {
+                if (move.getType() == Type.WATER || move.getType() == Type.GRASS) {
+                    value *= 1.2; // Extra bonus against Rock types
+                }
+            }
+            
+            if (target.getCurrentType1() == Type.DRAGON || target.getCurrentType2() == Type.DRAGON) {
+                if (move.getType() == Type.ICE) {
+                    value *= 1.3; // Extra bonus against Dragon types
+                }
             }
         }
+        
+        // Cache the result
+        moveEffectivenessCache.put(cacheKey, value);
         
         return value;
-    }
-    
-    /**
-     * Calculate effectiveness of a move type against a Pokémon
-     */
-    private static double calculateMoveEffectiveness(Type moveType, PokemonView defender) {
-        if (moveType == null) {
-            return 1.0;
-        }
-        
-        Type defenderType1 = defender.getCurrentType1();
-        Type defenderType2 = defender.getCurrentType2();
-        
-        double effectiveness = getTypeEffectiveness(moveType, defenderType1);
-        
-        if (defenderType2 != null) {
-            effectiveness *= getTypeEffectiveness(moveType, defenderType2);
-        }
-        
-        return effectiveness;
     }
 }
